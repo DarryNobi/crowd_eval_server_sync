@@ -5,7 +5,7 @@ from PIL import Image
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import csv
-os.environ['CUDA_VISIBLE_DEVICES'] = '4'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 slim = tf.contrib.slim
 trunc_normal = lambda stddev: tf.truncated_normal_initializer(0.0, stddev)
 
@@ -282,7 +282,7 @@ learning_rate = 0.0001
 
 def run_training():
     train_dir = 'train.csv'
-    logs_train_dir = 'bus/logs'
+    logs_train_dir = 'model/logs'
     train,train_label = get_file_dir(train_dir)
     train_batch,train_label_batch = get_batch(train,train_label,
                                                          IMG_W,
@@ -335,7 +335,7 @@ def get_one_image(img_dir):
      return image_arr
 
 def test(test_file):
-    log_dir = 'bus/logs/'
+    log_dir = 'model/logs/'
     image_arr = get_one_image(test_file)
     fo = open("result.txt","w")
     with tf.Graph().as_default():
@@ -369,7 +369,28 @@ def test(test_file):
                 return 1
             else:
                 return 0
-
+def predict(im_arr):
+    log_dir='model/logs/'
+    with tf.Graph().as_default():
+        image=tf.cast(im_arr,tf.float32)
+        image=tf.image.per_image_standardization(image)
+        image=tf.reshape(image,[1,299,299,3])
+        test_logits,end_points =inception_v3(image,num_classes=4,is_training=False)
+        logits = tf.nn.softmax(test_logits)
+        x = tf.placeholder(tf.float32,shape = [299,299,3])
+        saver = tf.train.Saver()
+        with tf.Session() as sess:
+            ckpt = tf.train.get_checkpoint_state(log_dir)
+            if ckpt and ckpt.model_checkpoint_path:
+                global_step = ckpt.model_checkpoint_path.split('/')[-1].split('-')[-1]
+                saver.restore(sess, ckpt.model_checkpoint_path)
+                print('Loading success')
+            else:
+                print('No checkpoint')
+            prediction = sess.run(logits, feed_dict={x: im_arr})          
+            print(prediction)
+            max_index=np.argmax(prediction)
+            return max_index
 
 test_file_dir,label_dir= get_file_dir("test.csv")
 
@@ -379,12 +400,6 @@ def run(dir):
         num += test(dir[i+350*2])
         print(i)
     return num,num/100
-correct_num,correct_rate = run(test_file_dir)
-print (correct_num,correct_rate)
-
-
-
-
-
-
-
+if(__name__=='__main__'):
+    correct_num,correct_rate = run(test_file_dir)
+    print (correct_num,correct_rate)
