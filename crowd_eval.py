@@ -6,37 +6,10 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import csv
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 slim = tf.contrib.slim
 trunc_normal = lambda stddev: tf.truncated_normal_initializer(0.0, stddev)
 
-def get_file_dir(file):
-    image_dir = []
-    label_dir = []
-    r_csv = open(file)
-    path_lists = list(csv.reader(r_csv))
-    for i in path_lists:
-        image_dir.append(i[0])
-        label_dir.append(i[1])
-    label_dir = [int(j) for j in label_dir]
-    return image_dir,label_dir
-
-def get_batch(image,label,image_W,image_H,batch_size,capacity):
-    image = tf.cast(image,tf.string)
-    label = tf.cast(label,tf.int32)
-    
-    input_queue = tf.train.slice_input_producer([image,label],shuffle=True)
-    
-    label = input_queue[1]
-    image_contents = tf.read_file(input_queue[0])
-    image = tf.image.decode_jpeg(image_contents,channels=3)
-    #image = tf.image.resize_images(image,image_W,image_H)
-    image = tf.image.resize_image_with_crop_or_pad(image,image_W,image_H)
-    image = tf.cast(image,tf.float32)
-    image = tf.image.per_image_standardization(image)
-    image_batch,label_batch = tf.train.batch([image,label],batch_size = batch_size,num_threads=16,capacity = capacity)
-    
-    label_batch = tf.reshape(label_batch,[batch_size])
-    return image_batch,label_batch
 
 def inception_v3_arg_scope(weight_decay=0.00004,    # L2正则的weight_decay
                            stddev=0.1,  # 标准差0.1
@@ -243,163 +216,28 @@ def inception_v3(inputs,
       end_points['Predictions'] = prediction_fn(logits, scope='Predictions') # Softmax对结果进行分类预测
   return logits, end_points # 最后返回logits和包含辅助节点的end_points
 
-def losses(logits,labels):
-    with tf.variable_scope('loss') as scope:
-        cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits\
-                        (logits=logits,labels = labels,name='xentropy_per_example')
-        loss = tf.reduce_mean(cross_entropy,name = 'loss')
-        #reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-        #reg_constant = 0.01  # Choose an appropriate one.
-        #loss = loss1 + reg_constant * sum(reg_losses)
-        #loss = loss1 + reg_constant * tf.reduce_mean(reg_losses,name = 'loss2')
-        tf.summary.scalar(scope.name+'/loss',loss)
-    return loss
+sess=tf.Session()
+x=tf.placeholder(tf.float32,shape=[299,299,3])
+image=tf.cast(x,tf.float32)
+image=tf.image.per_image_standardization(image)
+image=tf.reshape(image,[1,299,299,3])
+test_logits,end_points =inception_v3(image,num_classes=4,is_training=False)
+logits = tf.nn.softmax(test_logits)
+saver=tf.train.Saver()
 
-def trainning(loss,learning_rate):
-    with tf.name_scope('optimizer'):
-        optimizer = tf.train.AdamOptimizer(learning_rate = learning_rate)
-        global_step = tf.Variable(0,name = 'global_step',trainable=False)
-        train_op = optimizer.minimize(loss,global_step=global_step)
-    return train_op
-
-def evaluation(logits,labels):
-    with tf.variable_scope('accuracy') as scope:
-        correct = tf.nn.in_top_k(logits,labels,1)
-        correct = tf.cast(correct,tf.float32)
-        accuracy = tf.reduce_mean(correct)
-        tf.summary.scalar(scope.name+'/accuracy',accuracy)
-    return accuracy
-
-
-
-N_CLASSES = 4
-IMG_W = 299
-IMG_H = 299
-BATCH_SIZE = 64
-CAPACITY = 107*64
-MAX_STEP = 8000
-learning_rate = 0.0001
-
-def run_training():
-    train_dir = 'train.csv'
-    logs_train_dir = 'model/logs'
-    train,train_label = get_file_dir(train_dir)
-    train_batch,train_label_batch = get_batch(train,train_label,
-                                                         IMG_W,
-                                                         IMG_H,
-                                                         BATCH_SIZE,
-                                                         CAPACITY)
-    #with slim.arg_scope(inception_v3_arg_scope()):
-    train_logits,end_points =inception_v3(train_batch,num_classes=4)
-    train_loss = losses(train_logits,train_label_batch)
-    train_op = trainning(train_loss,learning_rate)
-    train_acc = evaluation(train_logits,train_label_batch)
-    
-    summary_op = tf.summary.merge_all()
-    sess = tf.Session()
-    train_writer = tf.summary.FileWriter(logs_train_dir,sess.graph)
-    saver = tf.train.Saver()
-    
-    sess.run(tf.global_variables_initializer())
-    coord = tf.train.Coordinator()
-    threads = tf.train.start_queue_runners(sess = sess,coord = coord)
-    
-    try:
-        for step in np.arange(MAX_STEP):
-            if coord.should_stop():
-                break
-            _,tra_loss,tra_acc = sess.run([train_op,train_loss,train_acc])
-            if step %  50 == 0:
-                print('Step %d,train loss = %.2f,train occuracy = %.2f%%'%(step,tra_loss,tra_acc))
-                summary_str = sess.run(summary_op)
-                train_writer.add_summary(summary_str,step)
-                
-            if step % 1000 ==0 or (step +1) == MAX_STEP:
-                checkpoint_path = os.path.join(logs_train_dir,'model.ckpt')
-                saver.save(sess,checkpoint_path,global_step = step)
-    except tf.errors.OutOfRangeError:
-        print('Done training epoch limit reached')
-    finally:
-        coord.request_stop()
-    
-    coord.join(threads)
-    sess.close()
-'''
-run_training() 
-'''
-def get_one_image(img_dir):
-     image = Image.open(img_dir)
-     #plt.imshow(image)
-     image = image.resize([299, 299])
-     image_arr = np.array(image)
-     return image_arr
-
-def test(test_file):
-    log_dir = 'model/logs/'
-    image_arr = get_one_image(test_file)
-    fo = open("result.txt","w")
-    with tf.Graph().as_default():
-        image = tf.cast(image_arr, tf.float32)
-        image = tf.image.per_image_standardization(image)
-        image = tf.reshape(image, [1,299, 299, 3])
-        #print(image.shape)
-        #with slim.arg_scope(inception_v3_arg_scope()):
-        test_logits,end_points =inception_v3(image,num_classes=4,is_training=False)
-        logits = tf.nn.softmax(test_logits)
-        x = tf.placeholder(tf.float32,shape = [299,299,3])
-        saver = tf.train.Saver()
-        with tf.Session() as sess:
-            ckpt = tf.train.get_checkpoint_state(log_dir)
-            if ckpt and ckpt.model_checkpoint_path:
-                global_step = ckpt.model_checkpoint_path.split('/')[-1].split('-')[-1]
-                saver.restore(sess, ckpt.model_checkpoint_path)
-                print('Loading success')
-            else:
-                print('No checkpoint')
-            prediction = sess.run(logits, feed_dict={x: image_arr})          
-            print(prediction)
-            max_index = np.argmax(prediction) 
-            fo.write(str(prediction))
-            fo.close()
-            print(max_index)
-            name = test_file.split('/')[-2]
-            name = np.int(name)
-            print(name)
-            if max_index==name:
-                return 1
-            else:
-                return 0
-def predict(im_arr):
+def load_model():
     log_dir='model/logs/'
-    with tf.Graph().as_default():
-        image=tf.cast(im_arr,tf.float32)
-        image=tf.image.per_image_standardization(image)
-        image=tf.reshape(image,[1,299,299,3])
-        test_logits,end_points =inception_v3(image,num_classes=4,is_training=False)
-        logits = tf.nn.softmax(test_logits)
-        x = tf.placeholder(tf.float32,shape = [299,299,3])
-        saver = tf.train.Saver()
-        with tf.Session() as sess:
-            ckpt = tf.train.get_checkpoint_state(log_dir)
-            if ckpt and ckpt.model_checkpoint_path:
-                global_step = ckpt.model_checkpoint_path.split('/')[-1].split('-')[-1]
-                saver.restore(sess, ckpt.model_checkpoint_path)
-                print('Loading success')
-            else:
-                print('No checkpoint')
-            prediction = sess.run(logits, feed_dict={x: im_arr})          
-            print(prediction)
-            max_index=np.argmax(prediction)
-            return max_index
+    ckpt = tf.train.get_checkpoint_state(log_dir)
+    if ckpt and ckpt.model_checkpoint_path:
+        global_step = ckpt.model_checkpoint_path.split('/')[-1].split('-')[-1]
+        saver.restore(sess, ckpt.model_checkpoint_path)
+        print('Loading success')
+    else:
+        print('No checkpoint')
 
-test_file_dir,label_dir= get_file_dir("test.csv")
+def predict(im_arr):
+    prediction = sess.run(logits, feed_dict={x: im_arr})          
+    print(prediction)
+    max_index=np.argmax(prediction)
+    return max_index
 
-def run(dir):
-    num = 0
-    for i in np.arange(100):
-        num += test(dir[i+350*2])
-        print(i)
-    return num,num/100
-if(__name__=='__main__'):
-    correct_num,correct_rate = run(test_file_dir)
-    print (correct_num,correct_rate)
